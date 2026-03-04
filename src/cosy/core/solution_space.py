@@ -441,14 +441,16 @@ class SolutionSpace(Generic[NT, T, G]):
         # start has distance 0; unreachable non-terminals have distance -1
         distances: dict[NT, int] = {n: -1 for n in self.nonterminals()}
         distances[start] = 0
+        # shorter paths are prioritized by this factor
+        factor: int = 10
         pending_distances: deque[NT] = deque([start])
         while pending_distances:
             n = pending_distances.popleft()
             d = distances[n]
             for rule in self._rules[n]:
                 for m in rule.non_terminals:
-                    if distances[m] == -1 or distances[m] > d + 1:
-                        distances[m] = d + 1
+                    if distances[m] == -1 or distances[m] > d + factor:
+                        distances[m] = d + factor
                         pending_distances.append(m)
 
         # 2. Per-non-terminal state
@@ -461,7 +463,7 @@ class SolutionSpace(Generic[NT, T, G]):
         # smaller distance means higher priority, aging via the clock prevents starvation
         queue: AgingPriorityQueue[NT] = AgingPriorityQueue()
 
-        # 3. Generate fact trees (reachable, no NT arguments)
+        # 3. Generate fact trees (reachable, no non-terminal arguments)
         for n, exprs in self._rules.items():
             for expr in exprs:
                 if not expr.non_terminals:
