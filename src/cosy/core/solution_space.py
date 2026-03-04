@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from itertools import product
+from itertools import chain, product
 from queue import PriorityQueue
 from types import FunctionType
 from typing import Any, Generic, TypeVar
@@ -48,14 +48,41 @@ class RHSRule(Generic[NT, T, G]):
     def literal_substitution(self):
         return {n.name: n.value for n in self.arguments if isinstance(n, ConstantArgument)}
 
+import heapq
+
+class AgingPriorityQueue(Generic[NT]):
+    _heap: list[tuple[int, NT]]
+    _clock: int
+    _items: set[NT]
+
+    def __init__(self):
+        self._heap = []
+        self._clock = 0
+        self._items = set()
+
+    def contains(self, item: NT) -> bool:
+        return item in self._items
+    
+    def empty(self) -> bool:
+        return not self._heap
+
+    def enqueue(self, item: NT, priority: int) -> None:
+        if item not in self._items:
+            heapq.heappush(self._heap, (priority + self._clock, item))
+            self._items.add(item)
+
+    def dequeue(self) -> NT:
+        self._clock += 1
+        _, item = heapq.heappop(self._heap)
+        self._items.remove(item)
+        return item
 
 class SolutionSpace(Generic[NT, T, G]):
     _rules: defaultdict[NT, deque[RHSRule[NT, T, G]]]
+    _occurrences: dict[NT, deque[tuple[NT, RHSRule[NT, T, G]]]]
 
-    def __init__(self, rules: dict[NT, deque[RHSRule[NT, T, G]]] | None = None) -> None:
-        if rules is None:
-            rules = defaultdict(deque)
-        self._rules = defaultdict(deque, rules)
+    def __init__(self) -> None:
+        self._rules = defaultdict(deque)
 
     def get(self, nonterminal: NT) -> deque[RHSRule[NT, T, G]] | None:
         return self._rules.get(nonterminal)
@@ -76,7 +103,11 @@ class SolutionSpace(Generic[NT, T, G]):
         arguments: tuple[Argument, ...],
         predicates: tuple[Callable[[dict[str, Any]], bool], ...],
     ) -> None:
-        self._rules[nonterminal].append(RHSRule(arguments, predicates, terminal))
+        # add the rule to the solution space and add occurrences of non-terminals in the rule
+        rule = RHSRule(arguments, predicates, terminal)
+        self._rules[nonterminal].append(rule)
+        for m in rule.non_terminals:
+            self._occurrences[m].append((nonterminal, rule))
 
     def show(self) -> str:
         return "\n".join(
@@ -293,6 +324,56 @@ class SolutionSpace(Generic[NT, T, G]):
                                 queues[m].put(new_term)
             current_bucket_size += 1
         return
+
+    def enumerate_trees_lazy(
+        self,
+        start: NT,
+        interpretation: dict[T, Any] | None = None,
+    ) -> Iterable[Tree[T]]:
+        """
+        Enumerate trees as a lazy iterator efficiently - all terms are enumerated, no guaranteed term order.
+        """
+        if start not in self.nonterminals():
+            return
+
+        # minimal distance from start to each non-terminal, initialized to -1 (unreachable)
+        distances: dict[NT, int] = {n: -1 for n in self.nonterminals()}
+
+        # TODO: compute distances via dynamic programming efficiently
+
+        # queue of non-terminals to expand, ordered by distance from start
+        queue: AgingPriorityQueue[NT] = AgingPriorityQueue[NT]()
+
+        new_trees: dict[NT, Iterable[Tree[T]]] = {n: Iterable() for n in self.nonterminals()}
+
+        # already considered trees
+        existing_terms: dict[NT, set[Tree[T]]] = {n: set() for n in self.nonterminals()}
+
+        while not queue.empty():
+            # deque non-terminal with smallest distance from start
+            n = queue.dequeue()
+            tree = next(new_trees[n], None)
+            if tree is not None and tree not in existing_terms[n]:
+                existing_terms[n].add(tree)
+                if n == start:
+                    yield tree
+                for m, expr in self._occurrences[n]:
+                    queue.enqueue(m, distances[m])
+                    # also add iterator for new trees resulting from tree used in expr for m from existing_terms for other non-terminals
+                    # TODO actually you need to remember current existing_terms (not when it later called lazily the terms at a later point)
+                    # TODO needs to remember length of existing_terms right now for the non-terminals used in rule
+                    new_trees[n] = chain(new_trees[n], self._generate_new_trees(expr, existing_terms, interpretation, (n, tree)))
+
+
+        # add facts to queue and put them in new_trees
+
+        # maintain a set of items to check whether a new to insert item is already in the list
+        # use to order the non-terminals which to request a term from next
+        # priority ~ distance from target non-terminal
+        # insert into pq reverse map of current non-terminal (if siblings exist)
+        # start with factoid non-terminals
+        return
+
 
     def contains_tree(self, start: NT, tree: Tree[T], interpretation: dict[T, Any] | None = None) -> bool:
         """Check if the solution space contains a given `tree` derivable from `start`."""
