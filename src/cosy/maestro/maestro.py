@@ -1,5 +1,6 @@
 from collections.abc import Callable, Hashable, Sequence
 from itertools import groupby
+import itertools
 from typing import Generic, TypeVar
 
 from cosy.core.subtypes import Taxonomy
@@ -61,9 +62,10 @@ class Maestro(Generic[T]):
             raise TypeError(msg)
         solution_space = self._synthesizer.construct_solution_space(target).prune()
 
-        trees = solution_space.enumerate_trees(
-            target, max_count=max_count, interpretation=self.component_interpretations
-        )
+        trees = itertools.islice(solution_space.enumerate_trees_lazy(
+            target, interpretation=self.component_interpretations
+        ), max_count)
+
         return MaestroSolutions(
             trees,
             component_interpretations=self.component_interpretations,

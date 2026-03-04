@@ -51,29 +51,33 @@ class RHSRule(Generic[NT, T, G]):
 import heapq
 
 class AgingPriorityQueue(Generic[NT]):
-    _heap: list[tuple[int, NT]]
+    # (effective_priority, tiebreaker, item)
+    _heap: list[tuple[int, int, NT]]
     _clock: int
+    _index: int
     _items: set[NT]
 
     def __init__(self):
         self._heap = []
         self._clock = 0
+        self._index = 0
         self._items = set()
 
     def contains(self, item: NT) -> bool:
         return item in self._items
-    
+
     def empty(self) -> bool:
         return not self._heap
 
     def enqueue(self, item: NT, priority: int) -> None:
         if item not in self._items:
-            heapq.heappush(self._heap, (priority + self._clock, item))
+            heapq.heappush(self._heap, (priority + self._clock, self._index, item))
+            self._index += 1
             self._items.add(item)
 
     def dequeue(self) -> NT:
         self._clock += 1
-        _, item = heapq.heappop(self._heap)
+        _, _, item = heapq.heappop(self._heap)
         self._items.remove(item)
         return item
 
@@ -83,6 +87,7 @@ class SolutionSpace(Generic[NT, T, G]):
 
     def __init__(self) -> None:
         self._rules = defaultdict(deque)
+        self._occurrences = defaultdict(deque)
 
     def get(self, nonterminal: NT) -> deque[RHSRule[NT, T, G]] | None:
         return self._rules.get(nonterminal)
@@ -137,19 +142,13 @@ class SolutionSpace(Generic[NT, T, G]):
                     if m not in ground_types and all(t in ground_types for t in non_terminals):
                         queue.add(m)
 
-        return SolutionSpace[NT, T, G](
-            defaultdict(
-                deque,
-                {
-                    target: deque(
-                        possibility
-                        for possibility in self._rules[target]
-                        if all(t in ground_types for t in possibility.non_terminals)
-                    )
-                    for target in ground_types
-                },
-            )
-        )
+        result: SolutionSpace[NT, T, G] = SolutionSpace[NT, T, G]()
+        for target in ground_types:
+            for possibility in self._rules[target]:
+                if all(t in ground_types for t in possibility.non_terminals):
+                    result.add_rule(target, possibility.terminal, possibility.arguments, possibility.predicates)
+        return result
+
 
     def _enumerate_tree_vectors(
         self,
@@ -258,6 +257,105 @@ class SolutionSpace(Generic[NT, T, G]):
                         return output_set
         return output_set
 
+    def _enumerate_tree_vectors_lazy(
+        self,
+        non_terminals: Sequence[NT | None],
+        existing_trees: list[list[Tree[T]] | None],
+        nt_term: tuple[NT, Tree[T]] | None = None,
+    ) -> Iterable[tuple[Tree[T] | None, ...]]:
+        """Enumerate possible tree vectors for a given list of non-terminals and existing trees. Use nt_term at least once (if given)."""
+        if nt_term is None:
+            yield from product(*([n] if n is None else trees for n, trees in zip(non_terminals, existing_trees)))
+        else:
+            nt, term = nt_term
+            for i, n in enumerate(non_terminals):
+                if n == nt:
+                    arg_lists: Iterable[Iterable[Tree[T] | None]] = (
+                        [None] if m is None else [term] if i == j else trees
+                        for j, (m, trees) in enumerate(zip(non_terminals, existing_trees))
+                    )
+                    yield from product(*arg_lists)
+
+    def _generate_new_trees_lazy(
+        self,
+        rule: RHSRule[NT, T, G],
+        existing_trees: list[list[Tree[T]] | None],
+        interpretation: dict[T, Any] | None = None,
+        nt_old_term: tuple[NT, Tree[T]] | None = None,
+    ) -> Iterable[Tree[T]]:
+        # Iterate over new trees for rule `rule` from existing trees
+        # the term `old_term` should be a subterm of all resulting terms, at a position, that corresponds to `nt`
+
+        named_non_terminals = [
+            a.origin if isinstance(a, NonTerminalArgument) and a.name is not None else None for a in rule.arguments
+        ]
+        unnamed_non_terminals = [
+            a.origin if isinstance(a, NonTerminalArgument) and a.name is None else None for a in rule.arguments
+        ]
+        literal_arguments = [Tree(a.value, ()) if isinstance(a, ConstantArgument) else None for a in rule.arguments]
+
+        def interleave(
+            parameters: Sequence[Tree[T] | None],
+            literal_arguments: Sequence[Tree[T] | None],
+            arguments: Sequence[Tree[T] | None],
+        ) -> Iterable[Tree[T]]:
+            """Interleave parameters, literal arguments and arguments."""
+            for parameter, literal_argument, argument in zip(parameters, literal_arguments, arguments, strict=True):
+                if parameter is not None:
+                    yield parameter
+                elif literal_argument is not None:
+                    yield literal_argument
+                elif argument is not None:
+                    yield argument
+                else:
+                    msg = "All arguments of interleave are None"
+                    raise ValueError(msg)
+
+        def construct_tree(
+            rule: RHSRule[NT, T, G],
+            parameters: Sequence[Tree[T] | None],
+            literal_arguments: Sequence[Tree[T] | None],
+            arguments: Sequence[Tree[T] | None],
+        ) -> Tree[T]:
+            """Construct a new tree from the rule and the given specific arguments."""
+            return Tree(
+                rule.terminal,
+                tuple(interleave(parameters, literal_arguments, arguments)),
+            )
+
+        def specific_substitution(parameters: Sequence[Tree[T] | None]):
+            return {
+                a.name: p if interpretation is None else p.interpret(interpretation)
+                for p, a in zip(parameters, rule.arguments, strict=True)
+                if isinstance(a, NonTerminalArgument) and a.name is not None and p is not None
+            } | rule.literal_substitution
+
+        def valid_parameters(
+            nt_term: tuple[NT, Tree[T]] | None,
+        ) -> Iterable[tuple[Tree[T] | None, ...]]:
+            """Enumerate all valid parameters for the rule."""
+            for parameters in self._enumerate_tree_vectors_lazy(named_non_terminals, existing_trees, nt_term):
+                if rule.predicates:
+                    # compute the specific substitution only if there are predicates
+                    substitution = specific_substitution(parameters)
+                    if all(predicate(substitution) for predicate in rule.predicates):
+                        yield parameters
+                else:
+                    yield parameters
+
+        for parameters in valid_parameters(nt_old_term):
+            for arguments in self._enumerate_tree_vectors_lazy(unnamed_non_terminals, existing_trees):
+                yield construct_tree(rule, parameters, literal_arguments, arguments)
+
+        if nt_old_term is not None:
+            all_parameters: deque[tuple[Tree[T] | None, ...]] | None = None
+            for arguments in self._enumerate_tree_vectors_lazy(unnamed_non_terminals, existing_trees):
+                all_parameters = all_parameters if all_parameters is not None else deque(valid_parameters(None))
+                for parameters in all_parameters:
+                    yield construct_tree(rule, parameters, literal_arguments, arguments)
+
+        return
+
     def enumerate_trees(
         self,
         start: NT,
@@ -336,42 +434,63 @@ class SolutionSpace(Generic[NT, T, G]):
         if start not in self.nonterminals():
             return
 
-        # minimal distance from start to each non-terminal, initialized to -1 (unreachable)
+        # 1. Compute distances from `start` through the grammar
+        # distances[n] = minimum number of rule-applications on the path from start to n
+        # start has distance 0; unreachable NTs have distance -1
         distances: dict[NT, int] = {n: -1 for n in self.nonterminals()}
+        distances[start] = 0
+        pending_distances: deque[NT] = deque([start])
+        while pending_distances:
+            n = pending_distances.popleft()
+            d = distances[n]
+            for rule in self._rules[n]:
+                for m in rule.non_terminals:
+                    if distances[m] == -1 or distances[m] > d + 1:
+                        distances[m] = d + 1
+                        pending_distances.append(m)
 
-        # TODO: compute distances via dynamic programming efficiently
+        # 2. Per-NT state
+        # pending_trees[n] are trees discovered but not yet incorporated
+        # existing_trees[n] are trees already incorporated (used for combinations)
+        pending_trees: dict[NT, Iterable[Tree[T]]] = {n: iter(deque()) for n in self.nonterminals()}
+        existing_trees: dict[NT, set[Tree[T]]] = {n: set() for n in self.nonterminals()}
 
-        # queue of non-terminals to expand, ordered by distance from start
-        queue: AgingPriorityQueue[NT] = AgingPriorityQueue[NT]()
+        # queue: NTs with pending trees, ordered by distance from start
+        # smaller distance = higher priority (start trees yielded as soon as ready)
+        # aging via the clock prevents starvation of deep NTs
+        queue: AgingPriorityQueue[NT] = AgingPriorityQueue()
 
-        new_trees: dict[NT, Iterable[Tree[T]]] = {n: Iterable() for n in self.nonterminals()}
+        # 3. Seed: generate fact trees (rules with no NT arguments)
+        for n, exprs in self._rules.items():
+            for expr in exprs:
+                if not expr.non_terminals:
+                    for tree in self._generate_new_trees(expr, existing_trees, interpretation):
+                        pending_trees[n] = chain(pending_trees[n], [tree])
+                    queue.enqueue(n, distances[n])
 
-        # already considered trees
-        existing_terms: dict[NT, set[Tree[T]]] = {n: set() for n in self.nonterminals()}
-
+        # 4. Main loop: process one pending tree per iteration
         while not queue.empty():
-            # deque non-terminal with smallest distance from start
             n = queue.dequeue()
-            tree = next(new_trees[n], None)
-            if tree is not None and tree not in existing_terms[n]:
-                existing_terms[n].add(tree)
-                if n == start:
-                    yield tree
-                for m, expr in self._occurrences[n]:
-                    queue.enqueue(m, distances[m])
-                    # also add iterator for new trees resulting from tree used in expr for m from existing_terms for other non-terminals
-                    # TODO actually you need to remember current existing_terms (not when it later called lazily the terms at a later point)
-                    # TODO needs to remember length of existing_terms right now for the non-terminals used in rule
-                    new_trees[n] = chain(new_trees[n], self._generate_new_trees(expr, existing_terms, interpretation, (n, tree)))
 
+            # drain leading duplicates (a tree may appear multiple times in pending
+            # if it was generated via two different parent combinations).
+            tree: Tree[T] | None = None
+            tree = next(pending_trees[n], None)
 
-        # add facts to queue and put them in new_trees
+            if tree is not None:
+                # re-enqueue n if more trees might still be pending
+                queue.enqueue(n, distances[n])
+                if tree not in existing_trees[n]:
+                    existing_trees[n].add(tree)
+                    # yield immediately if this is a tree for the start non-terminal
+                    if n == start:
+                        yield tree
+                    for m, expr in self._occurrences[n]:
+                        queue.enqueue(m, distances[m])
+                        current_trees: list[Tree[T] | None] # current trees for the non-terminals in the rule, used to generate new trees for m
+                        current_trees = [list(existing_trees[argument.origin]) if isinstance(argument, NonTerminalArgument) else None for argument in expr.arguments]
+                        pending_trees[m] = chain(pending_trees[m], self._generate_new_trees_lazy(expr, current_trees, interpretation, (n, tree)))
 
-        # maintain a set of items to check whether a new to insert item is already in the list
-        # use to order the non-terminals which to request a term from next
-        # priority ~ distance from target non-terminal
-        # insert into pq reverse map of current non-terminal (if siblings exist)
-        # start with factoid non-terminals
         return
 
 
