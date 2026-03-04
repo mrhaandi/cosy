@@ -454,16 +454,14 @@ class SolutionSpace(Generic[NT, T, G]):
                         pending_distances.append(m)
 
         # 2. Per-non-terminal state
-        # pending_trees[n] are trees discovered but not yet incorporated
+        # trees discovered but not yet incorporated
         pending_trees: dict[NT, Iterable[Tree[T]]] = {n: iter(deque()) for n in self.nonterminals()}
-        # existing_trees[n] are trees already incorporated (membership test)
+        # trees already incorporated
         existing_trees: dict[NT, set[Tree[T]]] = {n: set() for n in self.nonterminals()}
-
-        # queue: non-terminals with pending trees
-        # smaller distance means higher priority, aging via the clock prevents starvation
+        # non-terminals with pending trees:smaller distance means higher priority, aging prevents starvation
         queue: AgingPriorityQueue[NT] = AgingPriorityQueue()
 
-        # 3. Generate fact trees (reachable, no non-terminal arguments)
+        # 3. Generate reachable trees with no arguments
         for n, exprs in self._rules.items():
             for expr in exprs:
                 if not expr.non_terminals:
@@ -474,7 +472,6 @@ class SolutionSpace(Generic[NT, T, G]):
         # 4. Process one pending tree per iteration
         while not queue.empty():
             n = queue.dequeue()
-
             tree: Tree[T] | None = next(pending_trees[n], None)
 
             if tree is not None:
