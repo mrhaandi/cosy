@@ -1,5 +1,6 @@
 # regression test for literal substitution inference on overlapping substitutions
 
+import itertools
 from cosy.core import Constructor, Literal, SpecificationBuilder, Synthesizer, Var
 from cosy.core.synthesizer import Specification
 from cosy.core.tree import Tree
@@ -64,11 +65,11 @@ def test_param() -> None:
     target = (("a" @ Literal(42)) ** Constructor("d")) ** Constructor("d")
 
     solution_space = synthesizer.construct_solution_space(target)
-    terms = {str(t) for t in solution_space.enumerate_trees(target, 10)}
+    terms = {str(t) for t in itertools.islice(solution_space.enumerate_trees_lazy(target), 10)}
 
     assert terms == {"C 42 True", "C 42 False"}
 
-    for t in solution_space.enumerate_trees(target, 10):
+    for t in itertools.islice(solution_space.enumerate_trees_lazy(target), 10):
         assert solution_space.contains_tree(target, t)
 
     # the tree "C 42 None" is not in the solution space because of assert_m

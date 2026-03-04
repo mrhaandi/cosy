@@ -1,4 +1,5 @@
 # regression test for position-wise intersection of arguments
+import itertools
 from cosy.core.synthesizer import Synthesizer
 from cosy.core.types import Constructor, Type
 
@@ -20,8 +21,8 @@ def test_intersect_arguments() -> None:
     query = Type.intersect([Constructor("b1"), Constructor("b2"), Constructor("b3")])
     solution_space = Synthesizer(component_specifications).construct_solution_space(query)
     expected_results = {"b", "f(a, b)", "f(a, f(a, b))"}
-    results = {tree.interpret() for tree in solution_space.enumerate_trees(query, max_count=3)}
+    results = {tree.interpret() for tree in itertools.islice(solution_space.enumerate_trees_lazy(query), 3)}
     assert results == expected_results
 
-    for tree in solution_space.enumerate_trees(query, max_count=3):
+    for tree in itertools.islice(solution_space.enumerate_trees_lazy(query),3):
         assert solution_space.contains_tree(query, tree)

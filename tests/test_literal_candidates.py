@@ -43,7 +43,7 @@ def test_candidates() -> None:
             for z in [True, False, None]:
                 target = xyz(x, y, z)
                 solution_space = synthesizer.construct_solution_space(target)
-                result = {tree.interpret() for tree in solution_space.enumerate_trees(target)}
+                result = {tree.interpret() for tree in solution_space.enumerate_trees_lazy(target)}
                 if (x is not None and not x) or y or (z is not None and not z):
                     assert len(result) == 0
                 else:
@@ -74,8 +74,9 @@ def test_multi_values1() -> None:
     synthesizer = Synthesizer(component_specifications)
     target = Constructor("c", Literal(0))
     solution_space = synthesizer.construct_solution_space(target)
-    assert [tree.interpret() for tree in solution_space.enumerate_trees(target)] == ["C 0 1"]
+    assert [tree.interpret() for tree in solution_space.enumerate_trees_lazy(target)] == ["C 0 1"]
 
+test_multi_values1()
 
 def test_multi_values2() -> None:
     # a literal varible can be assigned multiple computed values
@@ -101,7 +102,7 @@ def test_multi_values2() -> None:
     synthesizer = Synthesizer(component_specifications)
     target = Constructor("c", Literal(1))
     solution_space = synthesizer.construct_solution_space(target)
-    assert {tree.interpret() for tree in solution_space.enumerate_trees(target)} == {
+    assert {tree.interpret() for tree in solution_space.enumerate_trees_lazy(target)} == {
         "C 1 2",
         "C 1 0",
     }
@@ -135,7 +136,7 @@ def test_infinite_values() -> None:
     synthesizer = Synthesizer(component_specifications)
     solution_space = synthesizer.construct_solution_space(target)
 
-    assert [tree.interpret() for tree in solution_space.enumerate_trees(target)] == ["C 3 (C 2 (C 1 (ZERO)))"]
+    assert [tree.interpret() for tree in solution_space.enumerate_trees_lazy(target)] == ["C 3 (C 2 (C 1 (ZERO)))"]
 
-    for tree in solution_space.enumerate_trees(target):
+    for tree in solution_space.enumerate_trees_lazy(target):
         assert solution_space.contains_tree(target, tree)

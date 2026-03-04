@@ -28,6 +28,6 @@ def query():
 
 def test_param(query, component_specifications) -> None:
     solution_space = Synthesizer(component_specifications).construct_solution_space(query)
-    for tree in solution_space.enumerate_trees(query):
+    for tree in solution_space.enumerate_trees_lazy(query):
         msg = f"This should not be reached {tree}"
         raise NotImplementedError(msg)
