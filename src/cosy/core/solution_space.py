@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from itertools import chain, product
+from itertools import chain, product, islice
 from queue import PriorityQueue
 from types import FunctionType
 from typing import Any, Generic, TypeVar
@@ -260,7 +260,7 @@ class SolutionSpace(Generic[NT, T, G]):
     def _enumerate_tree_vectors_lazy(
         self,
         non_terminals: Sequence[NT | None],
-        existing_trees: list[list[Tree[T]] | None],
+        existing_trees: list[list[Tree[T] | None]],
         nt_term: tuple[NT, Tree[T]] | None = None,
     ) -> Iterable[tuple[Tree[T] | None, ...]]:
         """Enumerate possible tree vectors for a given list of non-terminals and existing trees. Use nt_term at least once (if given)."""
@@ -279,7 +279,7 @@ class SolutionSpace(Generic[NT, T, G]):
     def _generate_new_trees_lazy(
         self,
         rule: RHSRule[NT, T, G],
-        existing_trees: list[list[Tree[T]] | None],
+        existing_trees: list[list[Tree[T] | None]],
         interpretation: dict[T, Any] | None = None,
         nt_old_term: tuple[NT, Tree[T]] | None = None,
     ) -> Iterable[Tree[T]]:
@@ -343,13 +343,15 @@ class SolutionSpace(Generic[NT, T, G]):
                 else:
                     yield parameters
 
+        # nt_old_term occurs in parameters
         for parameters in valid_parameters(nt_old_term):
             for arguments in self._enumerate_tree_vectors_lazy(unnamed_non_terminals, existing_trees):
                 yield construct_tree(rule, parameters, literal_arguments, arguments)
 
+        # nt_old_term occurs in arguments
         if nt_old_term is not None:
             all_parameters: deque[tuple[Tree[T] | None, ...]] | None = None
-            for arguments in self._enumerate_tree_vectors_lazy(unnamed_non_terminals, existing_trees):
+            for arguments in self._enumerate_tree_vectors_lazy(unnamed_non_terminals, existing_trees, nt_old_term):
                 all_parameters = all_parameters if all_parameters is not None else deque(valid_parameters(None))
                 for parameters in all_parameters:
                     yield construct_tree(rule, parameters, literal_arguments, arguments)
@@ -435,8 +437,8 @@ class SolutionSpace(Generic[NT, T, G]):
             return
 
         # 1. Compute distances from `start` through the grammar
-        # distances[n] = minimum number of rule-applications on the path from start to n
-        # start has distance 0; unreachable NTs have distance -1
+        # distances[n] is the minimum number of rule-applications on the path from start to n
+        # start has distance 0; unreachable non-terminals have distance -1
         distances: dict[NT, int] = {n: -1 for n in self.nonterminals()}
         distances[start] = 0
         pending_distances: deque[NT] = deque([start])
@@ -449,36 +451,32 @@ class SolutionSpace(Generic[NT, T, G]):
                         distances[m] = d + 1
                         pending_distances.append(m)
 
-        # 2. Per-NT state
+        # 2. Per-non-terminal state
         # pending_trees[n] are trees discovered but not yet incorporated
-        # existing_trees[n] are trees already incorporated (used for combinations)
         pending_trees: dict[NT, Iterable[Tree[T]]] = {n: iter(deque()) for n in self.nonterminals()}
+        # existing_trees[n] are trees already incorporated (membership test)
         existing_trees: dict[NT, set[Tree[T]]] = {n: set() for n in self.nonterminals()}
 
-        # queue: NTs with pending trees, ordered by distance from start
-        # smaller distance = higher priority (start trees yielded as soon as ready)
-        # aging via the clock prevents starvation of deep NTs
+        # queue: non-terminals with pending trees
+        # smaller distance means higher priority, aging via the clock prevents starvation
         queue: AgingPriorityQueue[NT] = AgingPriorityQueue()
 
-        # 3. Seed: generate fact trees (rules with no NT arguments)
+        # 3. Generate fact trees (reachable, no NT arguments)
         for n, exprs in self._rules.items():
             for expr in exprs:
                 if not expr.non_terminals:
-                    for tree in self._generate_new_trees(expr, existing_trees, interpretation):
-                        pending_trees[n] = chain(pending_trees[n], [tree])
-                    queue.enqueue(n, distances[n])
+                    pending_trees[n] = chain(pending_trees[n], self._generate_new_trees(expr, existing_trees, interpretation))
+                    if distances[n] >= 0:
+                        queue.enqueue(n, distances[n])
 
-        # 4. Main loop: process one pending tree per iteration
+        # 4. Process one pending tree per iteration
         while not queue.empty():
             n = queue.dequeue()
 
-            # drain leading duplicates (a tree may appear multiple times in pending
-            # if it was generated via two different parent combinations).
-            tree: Tree[T] | None = None
-            tree = next(pending_trees[n], None)
+            tree: Tree[T] | None = next(pending_trees[n], None)
 
             if tree is not None:
-                # re-enqueue n if more trees might still be pending
+                # re-enqueue n because more trees might still be pending
                 queue.enqueue(n, distances[n])
                 if tree not in existing_trees[n]:
                     existing_trees[n].add(tree)
@@ -487,8 +485,8 @@ class SolutionSpace(Generic[NT, T, G]):
                         yield tree
                     for m, expr in self._occurrences[n]:
                         queue.enqueue(m, distances[m])
-                        current_trees: list[Tree[T] | None] # current trees for the non-terminals in the rule, used to generate new trees for m
-                        current_trees = [list(existing_trees[argument.origin]) if isinstance(argument, NonTerminalArgument) else None for argument in expr.arguments]
+                        # current trees for the non-terminals in the rule, used to generate new trees for m
+                        current_trees: list[list[Tree[T] | None]] = [list(existing_trees[argument.origin]) if isinstance(argument, NonTerminalArgument) else [None] for argument in expr.arguments]
                         pending_trees[m] = chain(pending_trees[m], self._generate_new_trees_lazy(expr, current_trees, interpretation, (n, tree)))
 
         return

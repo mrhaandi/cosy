@@ -34,6 +34,7 @@ def test_contains_tree() -> None:
     solution_space.add_rule("Tree4", "t4_r", (), ())
 
     for tree in itertools.islice(solution_space.enumerate_trees_lazy("Tree0"), 100):
+    #for tree in itertools.islice(solution_space.enumerate_trees("Tree0", 10), 100):
         print(tree)
 
 test_contains_tree()
