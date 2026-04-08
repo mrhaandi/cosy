@@ -5,8 +5,7 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from itertools import chain, product, islice
-from queue import PriorityQueue
+from itertools import product
 from types import FunctionType
 from typing import Any, Generic, TypeVar
 
@@ -254,7 +253,7 @@ class SolutionSpace(Generic[NT, T, G]):
                         pending_distances.append(m)
 
         # trees discovered but not yet incorporated
-        pending_trees: dict[NT, Iterable[Tree[T]]] = {n: iter(deque()) for n in self.nonterminals()}
+        pending_trees: dict[NT, deque[Iterable[Tree[T]]]] = {n: deque() for n in self.nonterminals()}
         # trees already incorporated
         existing_trees: dict[NT, set[Tree[T]]] = {n: set() for n in self.nonterminals()}
         # non-terminals with pending trees:smaller distance means higher priority, aging prevents starvation
@@ -264,14 +263,19 @@ class SolutionSpace(Generic[NT, T, G]):
         for n, exprs in self._rules.items():
             for expr in exprs:
                 if not expr.non_terminals:
-                    pending_trees[n] = chain(pending_trees[n], self._generate_new_trees_lazy(expr, [[] for _ in expr.arguments]))
+                    pending_trees[n].append(self._generate_new_trees_lazy(expr, [[] for _ in expr.arguments]))
                     if distances[n] >= 0:
                         queue.enqueue(n, distances[n])
 
         # 3. Process one pending tree per iteration
         while not queue.empty():
             n = queue.dequeue()
-            tree: Tree[T] | None = next(pending_trees[n], None)
+            tree: Tree[T] | None = None
+
+            while pending_trees[n] and tree is None:
+                tree = next(pending_trees[n][0], None)
+                if tree is None:
+                    pending_trees[n].popleft()
 
             if tree is not None:
                 # re-enqueue n because more trees might still be pending
@@ -285,7 +289,7 @@ class SolutionSpace(Generic[NT, T, G]):
                         queue.enqueue(m, distances[m])
                         # current trees for the non-terminals in the rule, used to generate new trees for m
                         current_trees: list[list[Tree[T] | None]] = [list(existing_trees[argument.origin]) if isinstance(argument, NonTerminalArgument) else [None] for argument in expr.arguments]
-                        pending_trees[m] = chain(pending_trees[m], self._generate_new_trees_lazy(expr, current_trees, interpretation, (n, tree)))
+                        pending_trees[m].append(self._generate_new_trees_lazy(expr, current_trees, interpretation, (n, tree)))
 
         return
 
